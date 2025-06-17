@@ -17,6 +17,6 @@ data/openwebui
 data/pipelines
 data/postgres
 data/redis
-data/n8n
+data/n8n_storage
 
 env/*.env
