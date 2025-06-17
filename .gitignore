@@ -4,8 +4,6 @@ certbot/conf
 certbot/web
 
 data/comfyui
-
-conf/cloudflare/config.yml
 conf/comfyui/runner-scripts/download-models.txt
 conf/nginx/nginx.conf
 conf/nginx/conf.d/default.conf
@@ -19,5 +17,6 @@ data/openwebui
 data/pipelines
 data/postgres
 data/redis
+data/n8n
 
 env/*.env
