@@ -1,0 +1,225 @@
+version: "3.9"
+
+x-shared: &shared
+  restart: unless-stopped
+  image: n8nio/n8n:latest
+  env_file: env/n8n.env
+  links:
+    - db
+    - redis
+  volumes:
+    - ./data/n8n_storage:/home/node/.n8n
+  depends_on:
+    redis:
+      condition: service_healthy
+    db:
+      condition: service_healthy
+
+services:
+  auth:
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+    env_file: env/auth.env
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    restart: unless-stopped
+
+  db:
+    depends_on:
+      - watchtower
+    env_file: env/db.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 20s
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      timeout: 5s
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
+  docling:
+    build:
+     context: ./conf/docling
+     dockerfile: Dockerfile.docling
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 10s
+      test: curl --fail http://localhost:5001/health || exit 1
+      timeout: 5s
+    env_file: env/docling.env
+    image: quay.io/docling-project/docling-serve:latest
+    restart: unless-stopped
+    runtime: nvidia
+
+  edgetts:
+    depends_on:
+      - watchtower
+    env_file: env/edgetts.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 5s
+      test: "curl --fail http://localhost:5050/voices -H 'Authorization: Bearer your_api_key_here' || exit 1"
+      timeout: 5s
+    image: travisvn/openai-edge-tts:latest
+    ports:
+      - 5050:5050
+    restart: unless-stopped
+
+  mcposerver:
+    command: ["--config", "/app/conf/config.json"]
+    depends_on:
+      - watchtower
+    env_file: env/mcposerver.env
+    image: ghcr.io/open-webui/mcpo:latest
+    restart: unless-stopped
+    volumes:
+      - ./conf/mcposerver:/app/conf:ro
+
+  nginx:
+    depends_on:
+      - watchtower
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 5s
+      test: curl --fail http://localhost/ || exit 1
+      timeout: 3s
+    image: nginx:latest
+    ports:
+      - 80:80
+      - 443:443
+    restart: unless-stopped
+    volumes:
+      - ./conf/nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf
+      - ./conf/nginx/nginx.conf:/etc/nginx/nginx.conf
+#      - /etc/letsencrypt:/etc/letsencrypt:ro
+
+  ollama:
+    depends_on:
+    - watchtower
+    env_file: env/ollama.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 10s
+      test: curl --fail http://localhost:11434/api/version || exit 1
+      timeout: 3s
+    image: ollama/ollama:latest
+    ports:
+    - 11434:11434
+    restart: unless-stopped
+    volumes:
+    - ./data/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  openwebui:
+    depends_on:
+      - auth
+      - docling
+      - db
+      - edgetts
+      - ollama
+      - searxng
+      - watchtower
+    env_file: env/openwebui.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 10s
+      test: curl --fail http://localhost:8080/health || exit 1
+      timeout: 3s
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    image: ghcr.io/open-webui/open-webui:cuda
+    #image: zaintechmlcontainer.azurecr.io/paaet/openwebuipaaet
+    restart: unless-stopped
+    volumes:
+      - ./data/openwebui:/app/backend/data
+
+  redis:
+    depends_on:
+      - watchtower
+    env_file: env/redis.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 20s
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      timeout: 3s
+    image: redis/redis-stack:latest
+    restart: unless-stopped
+    volumes:
+      - ./data/redis:/data
+
+  tika:
+    image: apache/tika:latest-full
+    env_file: env/tika.env
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 5s
+      test: curl --fail http://localhost:9998/tika || exit 1
+      timeout: 5s
+    ports:
+      - "9998:9998"
+    restart: unless-stopped
+
+  n8n:
+    <<: *shared
+    ports:
+      - 5678:5678
+
+  n8n-worker:
+    <<: *shared
+    command: worker
+    depends_on:
+      - n8n
+
+
+  searxng:
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    cap_drop:
+      - ALL
+    env_file: env/searxng.env
+    depends_on:
+      - redis
+      - watchtower
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 10s
+      test: curl --fail http://localhost:8080/ || exit 1
+      timeout: 3s
+    image: searxng/searxng:latest
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
+    restart: unless-stopped
+    volumes:
+      - ./conf/searxng/settings.yml:/etc/searxng/settings.yml:rw
+      - ./conf/searxng/uwsgi.ini:/etc/searxng/uwsgi.ini:rw
+
+  watchtower:
+    command: --cleanup --debug --interval 300
+    env_file: env/watchtower.env
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
